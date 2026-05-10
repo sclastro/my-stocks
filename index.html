@@ -803,7 +803,7 @@ function switchTab(name) {
   if (name === 'news')  loadNews();
 }
 
-/* ── Chart ── */
+/* ── Chart（使用 Yahoo Finance 免費歷史數據）── */
 async function loadChart(range) {
   document.querySelectorAll('.tab-btn[data-range]').forEach(b =>
     b.classList.toggle('active', b.dataset.range === range));
@@ -812,22 +812,46 @@ async function loadChart(range) {
 
   const loading = document.getElementById('chart-loading');
   loading.textContent = 'Loading chart…';
-  const days = { '1M':30,'3M':90,'6M':180,'1Y':365 }[range] || 30;
+
+  // 將頁面 range 轉換成 Yahoo Finance 的 range / interval 參數
+  const rangeMap = {
+    '1M': { range: '1mo',  interval: '1d'  },
+    '3M': { range: '3mo',  interval: '1d'  },
+    '6M': { range: '6mo',  interval: '1d'  },
+    '1Y': { range: '1y',   interval: '1wk' },
+  };
+  const { range: yRange, interval: yInterval } = rangeMap[range] || rangeMap['1M'];
 
   try {
-    const data = await fetchCandles(ticker, daysAgo(days), nowTs());
-    if (data.s !== 'ok' || !data.c) throw new Error('No candle data');
+    // 經過自己的 yahoo-proxy，唔直接打 Yahoo（避免 CORS 問題）
+    const res  = await fetch(`/api/yahoo?ticker=${ticker}&range=${yRange}&interval=${yInterval}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const json = await res.json();
+
+    // Yahoo Finance 回傳的資料結構
+    const result    = json?.chart?.result?.[0];
+    const timestamps = result?.timestamp;
+    const closes    = result?.indicators?.quote?.[0]?.close;
+
+    if (!timestamps || !closes) throw new Error('No data returned');
+
     loading.textContent = '';
 
-    const labels = data.t.map(ts =>
-      new Date(ts*1000).toLocaleDateString('en-US', { month:'short', day:'numeric' }));
-    const prices = data.c;
+    // 過濾掉 null 值（停市日）
+    const points = timestamps
+      .map((ts, i) => ({ ts, price: closes[i] }))
+      .filter(p => p.price != null);
+
+    const labels = points.map(p =>
+      new Date(p.ts * 1000).toLocaleDateString('en-US', { month:'short', day:'numeric' }));
+    const prices = points.map(p => p.price);
+
     if (priceChart) priceChart.destroy();
 
     const ctx   = document.getElementById('price-chart').getContext('2d');
     const up    = prices[prices.length-1] >= prices[0];
     const color = up ? '#2d7d4a' : '#c03030';
-    const grad  = ctx.createLinearGradient(0,0,0,280);
+    const grad  = ctx.createLinearGradient(0, 0, 0, 280);
     grad.addColorStop(0, up ? 'rgba(45,125,74,.16)' : 'rgba(192,48,48,.16)');
     grad.addColorStop(1, 'rgba(249,247,244,0)');
 
